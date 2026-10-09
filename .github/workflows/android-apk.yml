@@ -1,0 +1,90 @@
+
+name: Build Heroes of the Bible APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "Heroesofthebible phase1.zip"
+      - ".github/workflows/android-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container:
+      image: barichello/godot-ci:4.7.2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Godot project
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extracted build
+          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' -print -quit)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No project ZIP found in the repository."
+            exit 1
+          fi
+          unzip -q "$ZIP_FILE" -d extracted
+          PROJECT_FILE="$(find extracted -type f -name project.godot -print -quit)"
+          if [ -z "$PROJECT_FILE" ]; then
+            echo "ERROR: ZIP does not contain a project.godot file."
+            echo "Check that Claude exported the complete Godot project."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$PROJECT_FILE")" >> "$GITHUB_ENV"
+          echo "Found Godot project: $PROJECT_FILE"
+
+      - name: Check Android export preset
+        shell: bash
+        run: |
+          if [ ! -f "$PROJECT_DIR/export_presets.cfg" ]; then
+            echo "ERROR: export_presets.cfg is missing."
+            echo "Add an Android export preset to the Godot project, then upload the updated project ZIP."
+            exit 1
+          fi
+          grep -q 'name="Android"' "$PROJECT_DIR/export_presets.cfg" || {
+            echo 'ERROR: No export preset named Android was found.'
+            exit 1
+          }
+
+      - name: Prepare Godot export templates
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.local/share/godot/export_templates"
+          if [ -d /root/.local/share/godot/export_templates ]; then
+            cp -a /root/.local/share/godot/export_templates/. \
+              "$HOME/.local/share/godot/export_templates/"
+          fi
+
+      - name: Import and validate project
+        shell: bash
+        run: |
+          godot --headless --editor --path "$PROJECT_DIR" --quit
+
+      - name: Export debug APK
+        shell: bash
+        run: |
+          godot --headless --path "$PROJECT_DIR" \
+            --export-debug "Android" \
+            "$GITHUB_WORKSPACE/build/HeroesOfTheBible.apk"
+
+      - name: Verify APK exists
+        shell: bash
+        run: |
+          test -s build/HeroesOfTheBible.apk
+          ls -lh build/HeroesOfTheBible.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HeroesOfTheBible-debug-APK
+          path: build/HeroesOfTheBible.apk
+          if-no-files-found: error
+          retention-days: 7
