@@ -1,11 +1,6 @@
 name: Build Heroes of the Bible APK
 
-'on':
-workflow_dispatch:
-push:
-paths:
-- '**.zip'
-- '.github/workflows/android-apk.yml'
+'on': [push, workflow_dispatch]
 
 permissions:
 contents: read
@@ -20,146 +15,54 @@ steps:
   - name: Checkout repository
     uses: actions/checkout@v5
 
-  - name: Install required Linux libraries
-    shell: bash
+  - name: Install Linux dependencies
     run: |
-      set -eux
       apt-get update
-      apt-get install -y fontconfig unzip zip
+      apt-get install -y unzip fontconfig
 
   - name: Extract Godot project
-    shell: bash
     run: |
-      set -euo pipefail
+      set -eu
       mkdir -p extracted build
-
       ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' -print -quit)"
-      if [ -z "$ZIP_FILE" ]; then
-        echo "ERROR: No project ZIP found in the repository."
-        exit 1
-      fi
-
-      echo "Using ZIP: $ZIP_FILE"
+      test -n "$ZIP_FILE" || { echo "No ZIP found"; exit 1; }
       unzip -q "$ZIP_FILE" -d extracted
-
       PROJECT_FILE="$(find extracted -type f -name project.godot -print -quit)"
-      if [ -z "$PROJECT_FILE" ]; then
-        echo "ERROR: ZIP does not contain project.godot."
-        exit 1
-      fi
-
+      test -n "$PROJECT_FILE" || { echo "project.godot not found in ZIP"; exit 1; }
       PROJECT_DIR="$(dirname "$PROJECT_FILE")"
       echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-      echo "Found project: $PROJECT_DIR"
+      echo "Project folder: $PROJECT_DIR"
 
-  - name: Check Android export preset
-    shell: bash
+  - name: Check Android preset
     run: |
-      set -euo pipefail
-
-      if [ ! -f "$PROJECT_DIR/export_presets.cfg" ]; then
-        echo "ERROR: export_presets.cfg is missing beside project.godot."
-        exit 1
-      fi
-
-      if ! grep -q 'name="Android"' "$PROJECT_DIR/export_presets.cfg"; then
-        echo "ERROR: Android export preset not found."
-        exit 1
-      fi
+      test -f "$PROJECT_DIR/export_presets.cfg" || { echo "export_presets.cfg missing"; exit 1; }
+      grep -q 'name="Android"' "$PROJECT_DIR/export_presets.cfg" || { echo "Android preset missing"; exit 1; }
 
   - name: Configure Java and Android SDK
-    shell: bash
     run: |
-      set -euo pipefail
-
-      if ! command -v java >/dev/null 2>&1; then
-        echo "ERROR: Java is not installed in the build container."
-        exit 1
-      fi
-
+      set -eu
+      command -v java || { echo "Java is missing"; exit 1; }
       JAVA_BIN="$(readlink -f "$(command -v java)")"
       JAVA_PATH="$(dirname "$(dirname "$JAVA_BIN")")"
-
-      if [ ! -x "$JAVA_PATH/bin/java" ]; then
-        echo "ERROR: Could not determine a valid Java SDK path."
-        exit 1
-      fi
-
       SDK_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
-
       if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
-        for candidate in \
-          /root/android-sdk \
-          /opt/android-sdk \
-          /usr/local/lib/android/sdk \
-          /usr/lib/android-sdk; do
-          if [ -d "$candidate" ]; then
-            SDK_PATH="$candidate"
-            break
-          fi
+        for p in /root/android-sdk /opt/android-sdk /usr/local/lib/android/sdk /usr/lib/android-sdk; do
+          if [ -d "$p" ]; then SDK_PATH="$p"; break; fi
         done
       fi
-
-      if [ -z "$SDK_PATH" ] || [ ! -d "$SDK_PATH" ]; then
-        echo "ERROR: Android SDK was not found in the container."
-        exit 1
-      fi
-
-      echo "Java SDK: $JAVA_PATH"
-      echo "Android SDK: $SDK_PATH"
-
+      test -d "$SDK_PATH" || { echo "Android SDK directory not found"; exit 1; }
       mkdir -p "$HOME/.config/godot"
-
-      cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
-      [gd_resource type="EditorSettings" format=3]
-
-      [resource]
-      export/android/java_sdk_path = "$JAVA_PATH"
-      export/android/android_sdk_path = "$SDK_PATH"
-      EOF
-
-  - name: Check Godot export templates
-    shell: bash
-    run: |
-      set -euo pipefail
-
-      godot --version
-
-      TEMPLATE_VERSION="4.7.2.stable"
-      TEMPLATE_DIR="$HOME/.local/share/godot/export_templates/$TEMPLATE_VERSION"
-
-      if [ ! -d "$TEMPLATE_DIR" ]; then
-        echo "ERROR: Godot Android export templates not found at $TEMPLATE_DIR."
-        find /root/.local/share/godot/export_templates -maxdepth 2 -type f 2>/dev/null || true
-        exit 1
-      fi
+      printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\nexport/android/java_sdk_path = "%s"\nexport/android/android_sdk_path = "%s"\n' "$JAVA_PATH" "$SDK_PATH" > "$HOME/.config/godot/editor_settings-4.tres"
 
   - name: Import and validate project
-    shell: bash
-    run: |
-      set -euo pipefail
-      godot --headless --editor --path "$PROJECT_DIR" --quit
+    run: godot --headless --editor --path "$PROJECT_DIR" --quit
 
   - name: Export debug APK
-    shell: bash
-    run: |
-      set -euo pipefail
+    run: godot --headless --path "$PROJECT_DIR" --export-debug "Android" "$GITHUB_WORKSPACE/build/HeroesOfTheBible.apk"
 
-      godot --headless --path "$PROJECT_DIR" \
-        --export-debug "Android" \
-        "$GITHUB_WORKSPACE/build/HeroesOfTheBible.apk"
-
-  - name: Verify APK exists
-    shell: bash
-    run: |
-      set -euo pipefail
-      test -s "$GITHUB_WORKSPACE/build/HeroesOfTheBible.apk"
-      ls -lh "$GITHUB_WORKSPACE/build/HeroesOfTheBible.apk"
-
-  - name: Upload APK artifact
+  - name: Upload APK
     uses: actions/upload-artifact@v5
     with:
       name: HeroesOfTheBible-debug-APK
       path: build/HeroesOfTheBible.apk
       if-no-files-found: error
-      retention-days: 7
